@@ -28,14 +28,19 @@ int main(int argc, char *argv[]) {
 	float total_time = 0;
 #endif
 
+	int ips;
 	int tmp;
 	int rgb = 3;
 	char imagepath[1024];
-	cudaStream_t streams[30];
-	if (argc < 2 || argc > 31) {
+	cudaStream_t streams[40];
+	if (argc < 2 || argc > 41) {
 		cout << "Usage: " << argv[0] << " [image file]..." << endl;
 		return -1;
 	}
+
+	int max_image_per_stream=3;
+//	int max_image_per_stream=30;
+//	int max_image_per_stream=12;
 
 	unsigned int num_images = argc - 1;
 
@@ -70,13 +75,13 @@ int main(int argc, char *argv[]) {
 
 	for (unsigned int i = 0; i < num_images; i++) {
 		strcpy(imagepath, argv[i + 1]);
-		cout << "Reading image located at " << imagepath << endl;
+		//cout << "Reading image located at " << imagepath << endl;
 		rgb_image[i] = stbi_load(imagepath, &width[i], &height[i], &components[i], rgb);
 		if (rgb_image[i] == NULL) {
 			cout << "Failed to open image " << imagepath << endl;
 			return -1;
 		}
-		cout << "Image Width:" << width[i] << "\tHeight:" << height[i] << "\t#ofChannels:" << components[i] << std::endl;
+		//cout << "Image Width:" << width[i] << "\tHeight:" << height[i] << "\t#ofChannels:" << components[i] << std::endl;
 		if (i) {
 			offsets[i] = offsets[i - 1] + numPixels[i - 1];
 			rescaleOffsets[i] = rescaleOffsets[i - 1] + rescaleNumPixels[i - 1];
@@ -90,11 +95,13 @@ int main(int argc, char *argv[]) {
 	totalPixels += offsets[num_images - 1] + numPixels[num_images - 1];
 	rescaleTotalPixels += rescaleOffsets[num_images - 1] + rescaleNumPixels[num_images - 1];
 	
-	cudaHostAlloc((void**)&input_image, totalPixels * rgb * sizeof(uint8_t), cudaHostAllocDefault);
+	cudaHostAlloc((void**)&input_image, totalPixels * rgb * sizeof(uint8_t) * max_image_per_stream, cudaHostAllocDefault);
 
-	for (unsigned int i = 0; i < num_images; i++) {
-		for(unsigned int j = 0; j < numPixels[i]*rgb; j++){
-			input_image[(offsets[i]*rgb)+j] = rgb_image[i][j];
+	for (unsigned int k = 0; k < max_image_per_stream; k++) {
+		for (unsigned int i = 0; i < num_images; i++) {
+			for(unsigned int j = 0; j < numPixels[i]*rgb; j++){
+				input_image[(offsets[i]*rgb*k)+j] = rgb_image[i][j];
+			}
 		}
 	}
  
@@ -107,7 +114,7 @@ int main(int argc, char *argv[]) {
 	const float host_nr_mask[MASK_DIM] = {1.0/MASK_DIM,1.0/MASK_DIM,1.0/MASK_DIM, 1.0/MASK_DIM,1.0/MASK_DIM,1.0/MASK_DIM, 1.0/MASK_DIM,1.0/MASK_DIM,1.0/MASK_DIM};
 	const uint8_t host_de_mask[MASK_DIM] = {1,1,1,1,1,1,1,1,1};
 
-	cudaHostAlloc((void**) &host_rs, rescaleTotalPixels * sizeof(uint8_t), cudaHostAllocDefault);
+	cudaHostAlloc((void**) &host_rs, rescaleTotalPixels * sizeof(uint8_t) * max_image_per_stream, cudaHostAllocDefault);
 	cudaError_t err;
 
 	// Setup constant memory for noise removal
@@ -124,26 +131,26 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Cuda malloc for input and rgb2grayscale+inversion output */
-	err = cudaMalloc((void **)&device_rgb, totalPixels * rgb * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_rgb, totalPixels * rgb * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for input image at line " << __LINE__ << endl;
 		return -1;
 	}
-	err = cudaMalloc((void **)&device_gs, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_gs, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for gs image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
 		return -1;
 	}
 	/* Cuda malloc for noise removal output and mask*/
-	err = cudaMalloc((void **)&device_nr, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_nr, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for nr image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
 		cudaFree(device_gs); // Free gs output from device memory before failing
 		return -1;
 	}
-	err = cudaMalloc((void **)&device_bin, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_bin, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for binarization image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -152,7 +159,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	/* Cuda malloc for global thresholding*/
-	err = cudaMalloc((void **)&device_gt, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_gt, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for gt image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -162,7 +169,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	/* Cuda malloc for dilation*/
-	err = cudaMalloc((void **)&device_dil, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_dil, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for dil image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -173,7 +180,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	/* Cuda malloc for erosion*/
-	err = cudaMalloc((void **)&device_ero, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_ero, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for ero image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -185,7 +192,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	/* Cuda malloc for rescale*/
-	err = cudaMalloc((void **)&device_rs, rescaleTotalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_rs, rescaleTotalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for rs image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -198,7 +205,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	/* Cuda malloc for rotate*/
-	err = cudaMalloc((void **)&device_rt, totalPixels * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_rt, totalPixels * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for rt image at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -212,7 +219,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	/* Cuda malloc for adaptive thresholding*/
-	err = cudaMalloc((void **)&device_hist,  (NUM_BINS*num_images) * sizeof(uint8_t));
+	err = cudaMalloc((void **)&device_hist,  (NUM_BINS*num_images) * sizeof(uint8_t) * max_image_per_stream);
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for histogram at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -226,7 +233,7 @@ int main(int argc, char *argv[]) {
 		cudaFree(device_rt); // Free rt output from device memory before failing
 		return -1;
 	}
-	err = cudaMalloc((void **)&device_threshold, sizeof(uint8_t) * num_images); // unsigned int
+	err = cudaMalloc((void **)&device_threshold, sizeof(uint8_t) * num_images * max_image_per_stream); // unsigned int
 	if(err!=cudaSuccess){
 		cout << "Failed to allocate device memory for threshold at line " << __LINE__ << endl;
 		cudaFree(device_rgb); // Free rgb from device memory before failing
@@ -244,137 +251,150 @@ int main(int argc, char *argv[]) {
 
 	// Initilize block and grid configuration
 
+for (unsigned int image_per_stream = 2; image_per_stream < max_image_per_stream; image_per_stream++){
+//for (unsigned int image_per_stream = 11; image_per_stream < max_image_per_stream; image_per_stream++){
+	int trials=1;
+	double total_time=0.0;
+	for (unsigned int trial_count = 0; trial_count < trials; trial_count++){
 #ifdef TIME_CUDA
 	cudaEventRecord(start);
 #endif
+//		for (unsigned int image_counter = 0; image_counter < image_per_stream; image_counter++){
 
-	int block_size = BLOCK_SIZE;
-	dim3 grid_dim(((width[0]-1)/block_size)+1,((height[0]-1)/block_size)+1,1);
-	dim3 block_dim(block_size,block_size,1);
+			int block_size = BLOCK_SIZE;
+			dim3 grid_dim(((width[0]-1)/block_size)+1,((height[0]-1)/block_size)+1,1);
+			dim3 block_dim(block_size,block_size,1);
 
-	for (unsigned int i = 0; i < num_images; i++) {
-		/* Cuda mem copy for rgb input image */
-		err = cudaMemcpyAsync(device_rgb + (offsets[i]*rgb), input_image + (offsets[i]*rgb), numPixels[i] * rgb * sizeof(uint8_t), cudaMemcpyHostToDevice, streams[i]);
-		if(err!=cudaSuccess){
-			cout << "Failed to copy input image to device at line " << __LINE__ << endl;
-			goto fail_exit;
-		}
-//	}
+			for (unsigned int i = 0; i < num_images; i++) {
+				/* Cuda mem copy for rgb input image */
+				err = cudaMemcpyAsync(device_rgb + (offsets[i]*rgb*image_per_stream), input_image + (offsets[i]*rgb*image_per_stream), numPixels[i] * rgb * sizeof(uint8_t)*image_per_stream, cudaMemcpyHostToDevice, streams[i]);
+				if(err!=cudaSuccess){
+					cout << "Failed to copy input image to device at line " << __LINE__ << endl;
+					goto fail_exit;
+				}
+		//	}
 
-//	for (unsigned int i = 0; i < num_images; i++) {
+		//	for (unsigned int i = 0; i < num_images; i++) {
 
-		// Set block and grid dim for rgb to gray+inversion kernel
-		block_size = BLOCK_SIZE;
-		grid_dim.x = ((width[i]-1)/block_size)+1;
-		grid_dim.y = ((height[i]-1)/block_size)+1;
-		grid_dim.z = 1;
-		block_dim.x = block_size;
-		block_dim.y = block_size;
-		block_dim.z = 1;
+				// Set block and grid dim for rgb to gray+inversion kernel
+				block_size = BLOCK_SIZE;
+				grid_dim.x = ((width[i]-1)/block_size)+1;
+				grid_dim.y = ((height[i]-1)/block_size)+1;
+				grid_dim.z = 1;
+				block_dim.x = block_size;
+				block_dim.y = block_size;
+				block_dim.z = 1;
 
-		// Call rgb to gray+inversion kernel
-		rgb2gray_invesion<<<grid_dim, block_dim, 0, streams[i]>>>(device_rgb + (offsets[i]*rgb), device_gs + offsets[i], width[i], height[i]);
+				// Call rgb to gray+inversion kernel
+				//rgb2gray_invesion<<<grid_dim, block_dim, 0, streams[i]>>>(device_rgb + (offsets[i]*rgb), device_gs + offsets[i], width[i], height[i]);
 
-		// Tiled Noise Removal
+				// Tiled Noise Removal
 		
-		//  Set block and grid dim for noise removal kernel
-		block_size = BLOCK_SIZE;
-		grid_dim.x = ((width[i]-1)/TILE_SIZE)+1;
-		grid_dim.y = ((height[i]-1)/TILE_SIZE)+1;
-		grid_dim.z = 1;
-		block_dim.x = block_size;
-		block_dim.y = block_size;
-		block_dim.z = 1;
-		tiled_noise_removal<<<grid_dim, block_dim, 0, streams[i]>>>(device_gs + offsets[i], device_nr + offsets[i], width[i], height[i]);
-		//tiled_rgb2gray_inversion_noise_removal<<<grid_dim, block_dim, 0, streams[i]>>>(device_rgb + (offsets[i]*rgb), device_nr + offsets[i], width[i], height[i]);
-		//tiled_rgb2gray_inversion_noise_removal_histogram<<<grid_dim, block_dim, 0, streams[i]>>>(device_rgb + (offsets[i]*rgb), device_nr + offsets[i], width[i], height[i], device_hist + (NUM_BINS*i), numPixels[i]);
-		// Binarization
+				//  Set block and grid dim for noise removal kernel
+				block_size = BLOCK_SIZE;
+				grid_dim.x = ((width[i]-1)/TILE_SIZE)+1;
+				grid_dim.y = ((height[i]-1)/TILE_SIZE)+1;
+				grid_dim.z = 1;
+				block_dim.x = block_size;
+				block_dim.y = block_size;
+				block_dim.z = 1;
+				//tiled_noise_removal<<<grid_dim, block_dim, 0, streams[i]>>>(device_gs + offsets[i], device_nr + offsets[i], width[i], height[i]);
+				//tiled_rgb2gray_inversion_noise_removal<<<grid_dim, block_dim, 0, streams[i]>>>(device_rgb + (offsets[i]*rgb), device_nr + offsets[i], width[i], height[i]);
+				tiled_rgb2gray_inversion_noise_removal_histogram<<<grid_dim, block_dim, 0, streams[i]>>>(device_rgb + (offsets[i]*rgb*image_per_stream), device_nr + offsets[i]*image_per_stream, width[i], height[i], device_hist + (NUM_BINS*i*image_per_stream), numPixels[i], image_per_stream);
+				// Binarization
 
-		// Set block and grid dim for adaptive binarization kernel
-		block_size = 1024;
-		grid_dim.x = (numPixels[i]-1)/block_size +1;
-		grid_dim.y = 1;
-		grid_dim.z = 1;
-		block_dim.x = block_size;
-		block_dim.y = 1;
-		block_dim.z = 1;
+				// Set block and grid dim for adaptive binarization kernel
+				block_size = 1024;
+				grid_dim.x = (numPixels[i]-1)/block_size +1;
+				grid_dim.y = 1;
+				grid_dim.z = 1;
+				block_dim.x = block_size;
+				block_dim.y = 1;
+				block_dim.z = 1;
 
 
-		adaptive_threshold_histogram<<<grid_dim,block_dim, 0, streams[i]>>>(device_hist + (NUM_BINS*i), device_nr + offsets[i], numPixels[i]);
-		adaptive_threshold_calculation<<<1,NUM_BINS, 0, streams[i]>>>(device_hist + (NUM_BINS*i), numPixels[i], device_threshold + i);
-		adaptive_threshold_apply<<<grid_dim,block_dim, 0, streams[i]>>>(device_nr + offsets[i], device_bin + offsets[i], numPixels[i], device_threshold + i);
+				//adaptive_threshold_histogram<<<grid_dim,block_dim, 0, streams[i]>>>(device_hist + (NUM_BINS*i), device_nr + offsets[i], numPixels[i]);
+				adaptive_threshold_calculation<<<1,NUM_BINS, 0, streams[i]>>>(device_hist + (NUM_BINS*i*image_per_stream), numPixels[i], device_threshold + i*image_per_stream,image_per_stream);
+				adaptive_threshold_apply<<<grid_dim,block_dim, 0, streams[i]>>>(device_nr + offsets[i]*image_per_stream, device_bin + offsets[i]*image_per_stream, numPixels[i], device_threshold + i*image_per_stream,image_per_stream);
 
-		//	 Opening - Dilation and Erosion
+				//	 Opening - Dilation and Erosion
 
-		block_size = BLOCK_SIZE;
-		grid_dim.x = ((width[i]-1)/TILE_SIZE)+1;
-		grid_dim.y = ((height[i]-1)/TILE_SIZE)+1;
-		//grid_dim.x = ((width[i]-1)/LOW_TILE_SIZE)+1;
-		//grid_dim.y = ((height[i]-1)/LOW_TILE_SIZE)+1;
-		grid_dim.z = 1;
-		block_dim.x = block_size;
-		block_dim.y = block_size;
-		block_dim.z = 1;
-		shared_erosion<<<grid_dim, block_dim, 0, streams[i]>>>(device_bin + offsets[i], device_ero + offsets[i], width[i], height[i]);
-		shared_dilation<<<grid_dim, block_dim, 0, streams[i]>>>(device_ero + offsets[i], device_dil + offsets[i], width[i], height[i]);
-		//shared_opening<<<grid_dim, block_dim, 0, streams[i]>>>(device_bin + offsets[i], device_dil + offsets[i], width[i], height[i]);
+				block_size = BLOCK_SIZE;
+				grid_dim.x = ((width[i]-1)/TILE_SIZE)+1;
+				grid_dim.y = ((height[i]-1)/TILE_SIZE)+1;
+				//grid_dim.x = ((width[i]-1)/LOW_TILE_SIZE)+1;
+				//grid_dim.y = ((height[i]-1)/LOW_TILE_SIZE)+1;
+				grid_dim.z = 1;
+				block_dim.x = block_size;
+				block_dim.y = block_size;
+				block_dim.z = 1;
+				//shared_erosion<<<grid_dim, block_dim, 0, streams[i]>>>(device_bin + offsets[i], device_ero + offsets[i], width[i], height[i]);
+				//shared_dilation<<<grid_dim, block_dim, 0, streams[i]>>>(device_ero + offsets[i], device_dil + offsets[i], width[i], height[i]);
+				shared_opening<<<grid_dim, block_dim, 0, streams[i]>>>(device_bin + offsets[i]*image_per_stream, device_dil + offsets[i]*image_per_stream, width[i], height[i], image_per_stream);
 
-		// Change width and height for new block and grid dim due to rotation
-		tmp = width[i];
-		width[i] = height[i];
-		height[i] = tmp;
-		block_size = BLOCK_SIZE;
-		grid_dim.x = ((width[i]-1)/BLOCK_SIZE)+1;
-		grid_dim.y = ((height[i]-1)/BLOCK_SIZE)+1;
-		grid_dim.z = 1;
-		block_dim.x = block_size;
-		block_dim.y = block_size;
+				// Change width and height for new block and grid dim due to rotation
+				tmp = width[i];
+				width[i] = height[i];
+				height[i] = tmp;
+				block_size = BLOCK_SIZE;
+				grid_dim.x = ((width[i]-1)/BLOCK_SIZE)+1;
+				grid_dim.y = ((height[i]-1)/BLOCK_SIZE)+1;
+				grid_dim.z = 1;
+				block_dim.x = block_size;
+				block_dim.y = block_size;
 
-		// Rotate
+				// Rotate
 
-		//rotate_gather<<<grid_dim, block_dim, 0, streams[i]>>>(device_rs + offsets[i], device_rt + offsets[i], width[i], height[i], -1, 0);
-		rotate_gather_90<<<grid_dim, block_dim, 0, streams[i]>>>(device_dil + offsets[i], device_rt + offsets[i], width[i], height[i]);
+				//rotate_gather<<<grid_dim, block_dim, 0, streams[i]>>>(device_rs + offsets[i], device_rt + offsets[i], width[i], height[i], -1, 0);
+				rotate_gather_90<<<grid_dim, block_dim, 0, streams[i]>>>(device_dil + offsets[i]*image_per_stream, device_rt + offsets[i]*image_per_stream, width[i], height[i],image_per_stream);
 
-		// Rescaling
+				// Rescaling
 
-		const unsigned int new_width  = roundf(width[i] * rescale);
-		const unsigned int new_height = roundf(height[i]  * rescale);
-		grid_dim.x = ((new_width-1)/BLOCK_SIZE)+1;
-		grid_dim.y = ((new_height-1)/BLOCK_SIZE)+1;
-		rescaling_bilin<<<grid_dim, block_dim, 0, streams[i]>>>(device_rt + offsets[i], device_rs + rescaleOffsets[i], width[i], height[i], rescale, new_width, new_height);
+				const unsigned int new_width  = roundf(width[i] * rescale);
+				const unsigned int new_height = roundf(height[i]  * rescale);
+				grid_dim.x = ((new_width-1)/BLOCK_SIZE)+1;
+				grid_dim.y = ((new_height-1)/BLOCK_SIZE)+1;
+				rescaling_bilin<<<grid_dim, block_dim, 0, streams[i]>>>(device_rt + offsets[i]*image_per_stream, device_rs + rescaleOffsets[i]*image_per_stream, width[i], height[i], rescale, new_width, new_height,image_per_stream);
 
-//}
+		//}
 
-//		for (unsigned int i = 0; i < num_images; i++) {
-//			cout << i << endl;
-//			cudaStreamSynchronize(streams[i]);
-//			cout << "Stream Sync" << cudaGetErrorName(cudaGetLastError()) << endl;
+		//		for (unsigned int i = 0; i < num_images; i++) {
+		//			cout << i << endl;
+		//			cudaStreamSynchronize(streams[i]);
+		//			cout << "Stream Sync" << cudaGetErrorName(cudaGetLastError()) << endl;
+		//		}
+
+		//	for (unsigned int i = 0; i < num_images; i++) {
+
+				err = cudaMemcpyAsync(host_rs + rescaleOffsets[i]*image_per_stream, device_rs + rescaleOffsets[i]*image_per_stream, rescaleNumPixels[i] * sizeof(uint8_t)*image_per_stream, cudaMemcpyDeviceToHost, streams[i]);
+				//err = cudaMemcpy(host_rt, device_rt, numPixels[0] * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+		//			cout << "memcpy2" << cudaGetErrorName(cudaGetLastError()) << endl;
+				// Get intermediate data to test noise removal kernel
+				if(err!=cudaSuccess){
+					cout << "Failed to copy rs image to device at line " << __LINE__ << endl;
+					goto fail_exit;
+				}
+			}
 //		}
-
-//	for (unsigned int i = 0; i < num_images; i++) {
-
-		err = cudaMemcpyAsync(host_rs + rescaleOffsets[i], device_rs + rescaleOffsets[i], rescaleNumPixels[i] * sizeof(uint8_t), cudaMemcpyDeviceToHost, streams[i]);
-		//err = cudaMemcpy(host_rt, device_rt, numPixels[0] * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-//			cout << "memcpy2" << cudaGetErrorName(cudaGetLastError()) << endl;
-		// Get intermediate data to test noise removal kernel
-		if(err!=cudaSuccess){
-			cout << "Failed to copy rs image to device at line " << __LINE__ << endl;
-			goto fail_exit;
+		for (unsigned int i = 0; i < num_images; i++) {
+			cudaStreamSynchronize(streams[i]);
 		}
-
-	}
-
-	for (unsigned int i = 0; i < num_images; i++) {
-		cudaStreamSynchronize(streams[i]);
-	}
 #ifdef TIME_CUDA
 	cudaEventRecord(stop);
 	cudaEventSynchronize(stop);
 	cudaEventElapsedTime(&milliseconds, start, stop);
-	printf("Number of images:%d\n",num_images);
-	printf("%.3f\n", milliseconds/num_images);
+	//printf("Number of images:%d\n",num_images);
+	//printf("%.3f\n", milliseconds/num_images);
+	//printf("Image_per_stream:%d\t",image_per_stream);
+	printf("%.3f\n", (num_images*image_per_stream)/(milliseconds));
+	//printf("%.6f\n", (milliseconds*1000)/(num_images*image_per_stream));
+/////	total_time += (num_images*image_per_stream)/(milliseconds);
 #endif
-
+	//printf("Trial %d: %.3f\n", trial_count, total_time);
+	}
+/////	printf("Image_per_stream:%d\t",image_per_stream);
+/////	printf("%.3f\n", total_time/trials);
+}
 	/* Write image using stbi
 	 * Image Name: Name of the output image
 	 * Width: Width of the image
@@ -395,7 +415,7 @@ int main(int argc, char *argv[]) {
 
 		cudaStreamSynchronize(streams[i]);
 		sprintf(str, "output_image_%d.png", i);
-		stbi_write_png(str, new_width, new_height, 1, host_rs + rescaleOffsets[i], new_width);
+		//stbi_write_png(str, new_width, new_height, 1, host_rs + rescaleOffsets[i], new_width);
 		//stbi_write_png(str, height[i], width[i], 1, host_rs + offsets[i], height[i]);
 		//stbi_write_png("input_rgb.png", height[i], width[i], 3, input_image + offsets[i], height[i]*3);
 	}

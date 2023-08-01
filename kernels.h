@@ -34,23 +34,24 @@ __global__ void noise_removal(uint8_t*, uint8_t*, float*, int, int);
 __global__ void tiled_noise_removal(uint8_t*, uint8_t*, int, int);
 __global__ void constant_memory_noise_removal(uint8_t*, uint8_t*, int, int);
 __global__ void tiled_rgb2gray_inversion_noise_removal_binarization(uint8_t*, uint8_t*, int, int);
+__global__ void tiled_rgb2gray_inversion_noise_removal_histogram(uint8_t *input, uint8_t *output, int WIDTH, int HEIGHT, unsigned int* bins, unsigned int numPixels, int trial);
 
 __global__ void naive_binarization(uint8_t*, uint8_t*, int, int);
 __global__ void binarization(uint8_t*, uint8_t*, int, int);
 
 __global__ void shared_dilation(uint8_t *input, uint8_t *output, int WIDTH, int HEIGHT);
 __global__ void shared_erosion(uint8_t *input, uint8_t *output, int WIDTH, int HEIGHT);
-__global__ void shared_combined(uint8_t *input, uint8_t *output, int WIDTH, int HEIGHT);
+__global__ void shared_opening(uint8_t *input, uint8_t *output, int WIDTH, int HEIGHT, int trial);
 
 __global__ void rotate_gather(uint8_t*, uint8_t*, unsigned int, unsigned int, float, float);
-__global__ void rotate_gather_90(uint8_t*, uint8_t*, unsigned int, unsigned int);
+__global__ void rotate_gather_90(uint8_t*, uint8_t*, unsigned int, unsigned int, int);
 __global__ void rotate_scatter_90(uint8_t*, uint8_t*, unsigned int, unsigned int);
 __global__ void rotate_shared_90(const uint8_t*, uint8_t*, const unsigned int, const unsigned int);
 // __global__ void rescaling_bilin(uint8_t*, uint8_t*, unsigned int, unsigned int, float);
-__global__ void rescaling_bilin(const uint8_t*, uint8_t*, const unsigned int, const unsigned int, const float, const unsigned int, const unsigned int);
+__global__ void rescaling_bilin(const uint8_t*, uint8_t*, const unsigned int, const unsigned int, const float, const unsigned int, const unsigned int, int);
 
 __global__ void adaptive_threshold_histogram(unsigned int*, uint8_t*, unsigned int);
-__global__ void adaptive_threshold_calculation(unsigned int*, unsigned int, uint8_t*);
-__global__ void adaptive_threshold_apply(uint8_t*, uint8_t*, int, uint8_t*);
+__global__ void adaptive_threshold_calculation(unsigned int*, unsigned int, uint8_t*, int);
+__global__ void adaptive_threshold_apply(uint8_t*, uint8_t*, int, uint8_t*, int);
 
 #endif
